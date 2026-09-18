@@ -93,6 +93,34 @@ const ERROR_REPORT_WINDOW_MS = 30 * 60 * 1000;
 const recentErrorReports = new Map(); // key -> { firstReportedAt, suppressed }
 const MAX_TRACKED_ERROR_KEYS = 200;
 
+// 2026-09-18: the update-check timer fires every 30 minutes regardless of
+// what the machine is doing, so it regularly lands mid-sleep, mid-VPN-switch
+// or mid-wifi-handoff on a laptop. Chromium's net stack reports that as one
+// of a handful of well-known transient codes (e.g. net::ERR_NETWORK_IO_SUSPENDED
+// when Windows suspends network I/O around sleep/wake) — not a broken update
+// feed, just this one poll catching the network at a bad moment. It always
+// clears itself on the next timer tick. Reporting it anyway was pure noise:
+// David's laptop alone could trigger this most days. Genuine feed breakage
+// (bad token, renamed/private repo, a real HTTP error from the release host)
+// still reports as before — this only filters the OS/network-transport layer.
+const TRANSIENT_NETWORK_ERROR_CODES = [
+  'ERR_NETWORK_IO_SUSPENDED',
+  'ERR_INTERNET_DISCONNECTED',
+  'ERR_NETWORK_CHANGED',
+  'ERR_CONNECTION_RESET',
+  'ERR_CONNECTION_CLOSED',
+  'ERR_CONNECTION_TIMED_OUT',
+  'ERR_NAME_NOT_RESOLVED',
+  'ERR_ADDRESS_UNREACHABLE',
+  'ERR_TIMED_OUT',
+  'ERR_PROXY_CONNECTION_FAILED'
+];
+
+function isTransientNetworkError(err) {
+  const message = err && err.message ? err.message : String(err);
+  return TRANSIENT_NETWORK_ERROR_CODES.some((code) => message.includes(code));
+}
+
 function reportUnexpectedApiFailure(err, userAction) {
   const isAuthErr = err instanceof EspoAuthError;
   const status = isAuthErr ? err.status : undefined;
@@ -330,6 +358,7 @@ function initAutoUpdate() {
   // the user; no longer silent for us. The 30-minute de-duplication above
   // stops a persistent outage flooding the inbox.
   autoUpdater.on('error', (err) => {
+    if (isTransientNetworkError(err)) return;
     reportUnexpectedApiFailure(err, 'Checking for an app update');
   });
 
